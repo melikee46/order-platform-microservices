@@ -1,0 +1,8 @@
+bin/
+obj/
+.dotnet/
+.local/
+.vs/
+.idea/
+*.user
+*.suo
