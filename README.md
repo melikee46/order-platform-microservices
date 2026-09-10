@@ -98,7 +98,13 @@ order-platform-learning/
 * [.NET 10 SDK](https://dotnet.microsoft.com/)
 * [Docker Desktop](https://www.docker.com/)
 
-### 2. Start Infrastructure (Docker)
+### 2. Configure Environment
+Copy the environment template and adjust credentials if needed:
+```bash
+cp .env.example .env
+```
+
+### 3. Start Infrastructure (Docker)
 Spin up RabbitMQ and the two PostgreSQL instances with a single command:
 ```bash
 docker compose up -d
@@ -151,6 +157,30 @@ curl http://localhost:5002/payments
 
 ---
 
+## 🔐 Security Practices
+
+This project implements the following security measures to demonstrate production-aware development habits:
+
+### Secrets Management
+- **No hardcoded credentials** in source code — RabbitMQ and PostgreSQL credentials are loaded from configuration files, **never from `Program.cs` literals**.
+- **Configuration hierarchy:** `appsettings.json` (committed, no secrets) → `appsettings.Development.json` (local dev overrides) → Environment Variables (production).
+- **Docker Compose** reads credentials from a `.env` file which is **gitignored** and never committed. A `.env.example` template is provided.
+
+### Input Validation
+- `POST /orders` validates `ProductName` (required, max 200 chars), `Quantity` (must be > 0), and `TotalPrice` (must be > 0) before processing. Invalid requests receive `400 Bad Request` with detailed error messages.
+
+### Transport Security
+- `UseHttpsRedirection()` is enabled to enforce HTTPS transport encryption.
+
+### Rate Limiting
+- Built-in ASP.NET Core rate limiting middleware is applied with a **fixed window policy** (100 requests/minute per client) to mitigate endpoint abuse and DoS attacks. Exceeding the limit returns `429 Too Many Requests`.
+
+### Authentication & Authorization
+- **Current state:** Individual microservices do not enforce auth directly. In microservice architecture, authentication is typically handled at the **API Gateway** level (Phase 6 — YARP), which validates JWT tokens or API keys before routing requests to internal services. Internal services operate within a trusted private network.
+- **Production recommendation:** Add JWT Bearer authentication via the Gateway, or implement per-service auth using `AddAuthentication()` + `AddJwtBearer()` for zero-trust environments.
+
+---
+
 ## 🗺️ Project Roadmap
 
 - [x] **Phase 1:** Docker infrastructure setup (RabbitMQ + multiple PostgreSQL containers).
@@ -158,7 +188,7 @@ curl http://localhost:5002/payments
 - [x] **Phase 3:** Event contract definition in `Shared.Contracts` and MassTransit publisher setup.
 - [x] **Phase 4:** `Payment.Service` implementation with MassTransit consumer and isolated database.
 - [ ] **Phase 5:** `Notification.Service` (Consumer for order/payment lifecycle alerts).
-- [ ] **Phase 6:** API Gateway integration via YARP (Single entry point & routing).
+- [ ] **Phase 6:** API Gateway integration via YARP (Single entry point, routing & authentication).
 - [ ] **Phase 7:** End-to-end containerization with root Docker Compose orchestration.
 - [ ] **Phase 8:** Distributed Observability (Health Checks, OpenTelemetry / Serilog + Seq).
 

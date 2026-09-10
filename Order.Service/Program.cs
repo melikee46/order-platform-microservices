@@ -1,3 +1,4 @@
+using System.Threading.RateLimiting;
 using MassTransit;
 using Microsoft.EntityFrameworkCore;
 using Order.Service.Data;
@@ -18,16 +19,29 @@ var connectionString = builder.Configuration.GetConnectionString("OrderDb")
 builder.Services.AddDbContext<OrderDbContext>(options =>
     options.UseNpgsql(connectionString));
 
-// Configure MassTransit with RabbitMQ
+// Configure MassTransit with RabbitMQ (credentials from appsettings, NOT hardcoded)
+var rabbitMqConfig = builder.Configuration.GetSection("RabbitMQ");
 builder.Services.AddMassTransit(x =>
 {
     x.UsingRabbitMq((context, cfg) =>
     {
-        cfg.Host("localhost", "/", h =>
+        cfg.Host(rabbitMqConfig["Host"] ?? "localhost", "/", h =>
         {
-            h.Username("guest");
-            h.Password("guest");
+            h.Username(rabbitMqConfig["Username"] ?? throw new InvalidOperationException("RabbitMQ Username not configured."));
+            h.Password(rabbitMqConfig["Password"] ?? throw new InvalidOperationException("RabbitMQ Password not configured."));
         });
+    });
+});
+
+// Rate Limiting — prevent endpoint spam / DoS
+builder.Services.AddRateLimiter(options =>
+{
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    options.AddFixedWindowLimiter("fixed", opt =>
+    {
+        opt.Window = TimeSpan.FromMinutes(1);
+        opt.PermitLimit = 100;
+        opt.QueueLimit = 0;
     });
 });
 
@@ -39,6 +53,10 @@ if (app.Environment.IsDevelopment())
     app.UseSwagger();
     app.UseSwaggerUI();
 }
+
+// Security middleware
+app.UseHttpsRedirection();
+app.UseRateLimiter();
 
 // Automatically ensure PostgreSQL database and tables are created
 using (var scope = app.Services.CreateScope())
@@ -55,11 +73,30 @@ using (var scope = app.Services.CreateScope())
 }
 
 // Minimal API Endpoints
-var ordersGroup = app.MapGroup("/orders").WithTags("Orders");
+var ordersGroup = app.MapGroup("/orders")
+    .WithTags("Orders")
+    .RequireRateLimiting("fixed");
 
-// POST /orders (Sipariş oluşturur, DB'ye yazar, OrderCreated event'i fırlatır)
+// POST /orders — Create a new order with input validation
 ordersGroup.MapPost("/", async (CreateOrderDto dto, OrderDbContext db, IPublishEndpoint publishEndpoint) =>
 {
+    // Input Validation
+    var errors = new List<string>();
+
+    if (string.IsNullOrWhiteSpace(dto.ProductName))
+        errors.Add("ProductName is required.");
+    else if (dto.ProductName.Length > 200)
+        errors.Add("ProductName cannot exceed 200 characters.");
+
+    if (dto.Quantity <= 0)
+        errors.Add("Quantity must be greater than zero.");
+
+    if (dto.TotalPrice <= 0)
+        errors.Add("TotalPrice must be greater than zero.");
+
+    if (errors.Count > 0)
+        return Results.BadRequest(new { errors });
+
     var order = new Order.Service.Models.Order
     {
         ProductName = dto.ProductName,
@@ -72,7 +109,7 @@ ordersGroup.MapPost("/", async (CreateOrderDto dto, OrderDbContext db, IPublishE
     db.Orders.Add(order);
     await db.SaveChangesAsync();
 
-    // Event-Driven İletişim: RabbitMQ'ya OrderCreated event'i yayınla
+    // Publish event to RabbitMQ (event-driven communication)
     await publishEndpoint.Publish(new OrderCreated(
         order.Id,
         order.ProductName,

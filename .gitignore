@@ -1,8 +1,15 @@
+# .NET build outputs
 bin/
 obj/
+
+# IDE / Editor
 .dotnet/
 .local/
 .vs/
 .idea/
 *.user
 *.suo
+
+# Secrets & Environment
+.env
+appsettings.Production.json

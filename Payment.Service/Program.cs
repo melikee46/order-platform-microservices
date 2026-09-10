@@ -1,3 +1,4 @@
+using System.Threading.RateLimiting;
 using MassTransit;
 using Microsoft.EntityFrameworkCore;
 using Payment.Service.Consumers;
@@ -16,21 +17,34 @@ var connectionString = builder.Configuration.GetConnectionString("PaymentDb")
 builder.Services.AddDbContext<PaymentDbContext>(options =>
     options.UseNpgsql(connectionString));
 
-// Configure MassTransit with RabbitMQ & Consumer
+// Configure MassTransit with RabbitMQ & Consumer (credentials from appsettings, NOT hardcoded)
+var rabbitMqConfig = builder.Configuration.GetSection("RabbitMQ");
 builder.Services.AddMassTransit(x =>
 {
     x.AddConsumer<OrderCreatedConsumer>();
 
     x.UsingRabbitMq((context, cfg) =>
     {
-        cfg.Host("localhost", "/", h =>
+        cfg.Host(rabbitMqConfig["Host"] ?? "localhost", "/", h =>
         {
-            h.Username("guest");
-            h.Password("guest");
+            h.Username(rabbitMqConfig["Username"] ?? throw new InvalidOperationException("RabbitMQ Username not configured."));
+            h.Password(rabbitMqConfig["Password"] ?? throw new InvalidOperationException("RabbitMQ Password not configured."));
         });
 
-        // RabbitMQ üzerinde Consumer için kuyrukları ve binding'leri otomatik oluşturur
+        // Automatically create queues and bindings for consumers on RabbitMQ
         cfg.ConfigureEndpoints(context);
+    });
+});
+
+// Rate Limiting — prevent endpoint spam / DoS
+builder.Services.AddRateLimiter(options =>
+{
+    options.RejectionStatusCode = StatusCodes.Status429TooManyRequests;
+    options.AddFixedWindowLimiter("fixed", opt =>
+    {
+        opt.Window = TimeSpan.FromMinutes(1);
+        opt.PermitLimit = 100;
+        opt.QueueLimit = 0;
     });
 });
 
@@ -42,6 +56,10 @@ if (app.Environment.IsDevelopment())
     app.UseSwagger();
     app.UseSwaggerUI();
 }
+
+// Security middleware
+app.UseHttpsRedirection();
+app.UseRateLimiter();
 
 // Automatically ensure PostgreSQL database and tables are created
 using (var scope = app.Services.CreateScope())
@@ -58,9 +76,11 @@ using (var scope = app.Services.CreateScope())
 }
 
 // Minimal API Endpoints
-var paymentsGroup = app.MapGroup("/payments").WithTags("Payments");
+var paymentsGroup = app.MapGroup("/payments")
+    .WithTags("Payments")
+    .RequireRateLimiting("fixed");
 
-// GET /payments (İşlenen tüm ödemeleri listeler)
+// GET /payments (List all processed payments)
 paymentsGroup.MapGet("/", async (PaymentDbContext db) =>
 {
     var payments = await db.Payments

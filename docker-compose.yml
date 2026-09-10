@@ -6,8 +6,8 @@ services:
       - "5672:5672"
       - "15672:15672"
     environment:
-      RABBITMQ_DEFAULT_USER: guest
-      RABBITMQ_DEFAULT_PASS: guest
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS}
     restart: unless-stopped
 
   order-db:
@@ -17,7 +17,7 @@ services:
       - "5433:5432"
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: pass
+      POSTGRES_PASSWORD: ${ORDER_DB_PASSWORD}
       POSTGRES_DB: orderdb
     restart: unless-stopped
 
@@ -28,6 +28,6 @@ services:
       - "5434:5432"
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: pass
+      POSTGRES_PASSWORD: ${PAYMENT_DB_PASSWORD}
       POSTGRES_DB: paymentdb
     restart: unless-stopped
