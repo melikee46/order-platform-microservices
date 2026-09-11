@@ -127,13 +127,18 @@ Copy the environment template and adjust credentials if needed:
 ```bash
 cp .env.example .env
 ```
+Before starting the .NET services, load the RabbitMQ credentials into the process environment:
+```bash
+set -a && . ./.env && set +a
+```
+The application configuration uses `RabbitMQ__Username` and `RabbitMQ__Password`; never commit the `.env` file.
 
 ### 3. Start Infrastructure (Docker)
 Spin up RabbitMQ and the two PostgreSQL instances with a single command:
 ```bash
 docker compose up -d
 ```
-* **RabbitMQ Dashboard:** [http://localhost:15672](http://localhost:15672) *(User: `guest` / `guest`)*
+* **RabbitMQ Dashboard:** [http://localhost:15672](http://localhost:15672) *(credentials come from `RABBITMQ_USER` and `RABBITMQ_PASS` in your untracked `.env` file)*
 
 ### 4. Run the Platform
 
@@ -193,7 +198,7 @@ curl -X POST http://localhost:5000/orders \
 
 ### 3. Query Payments through the Gateway
 ```bash
-curl http://localhost:5000/payments
+curl -H "Authorization: Bearer <jwt-token>" http://localhost:5000/payments
 ```
 
 ---
@@ -216,7 +221,14 @@ This project implements the following security measures to demonstrate productio
 
 ### API Gateway Architecture
 - Internal microservices are decoupled from external direct internet access.
-- In production, JWT token validation and authorization are enforced centrally at the Gateway before routing to internal private networks.
+- JWT bearer tokens are validated at the Gateway and again by the Order and Payment services (defense in depth). Requests to `/orders` and `/payments` without a valid token receive `401 Unauthorized`.
+- JWT validation requires `Authentication:Issuer`, `Authentication:Audience`, and a randomly generated `Authentication:SigningKey` of at least 32 characters. Keep these values outside source control using environment variables:
+  ```bash
+  export Authentication__Issuer="https://your-identity-provider"
+  export Authentication__Audience="order-platform"
+  export Authentication__SigningKey="<random-secret-at-least-32-characters>"
+  ```
+- The same values must be configured for the Gateway, Order.Service, and Payment.Service. Services fail fast when authentication settings are missing or too weak.
 
 ---
 

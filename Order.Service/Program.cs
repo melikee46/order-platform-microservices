@@ -1,5 +1,8 @@
+using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.RateLimiting;
+using Microsoft.IdentityModel.Tokens;
 using System.Threading.RateLimiting;
+using System.Text;
 using MassTransit;
 using Microsoft.EntityFrameworkCore;
 using Order.Service.Data;
@@ -8,6 +11,35 @@ using Order.Service.Models;
 using Shared.Contracts.Events;
 
 var builder = WebApplication.CreateBuilder(args);
+
+var authenticationConfig = builder.Configuration.GetSection("Authentication");
+var signingKey = authenticationConfig["SigningKey"]
+    ?? throw new InvalidOperationException("Authentication:SigningKey is not configured.");
+var issuer = authenticationConfig["Issuer"]
+    ?? throw new InvalidOperationException("Authentication:Issuer is not configured.");
+var audience = authenticationConfig["Audience"]
+    ?? throw new InvalidOperationException("Authentication:Audience is not configured.");
+
+if (signingKey.Length < 32)
+    throw new InvalidOperationException("Authentication:SigningKey must be at least 32 characters long.");
+
+builder.Services
+    .AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+    .AddJwtBearer(options =>
+    {
+        options.TokenValidationParameters = new TokenValidationParameters
+        {
+            ValidateIssuer = true,
+            ValidIssuer = issuer,
+            ValidateAudience = true,
+            ValidAudience = audience,
+            ValidateIssuerSigningKey = true,
+            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(signingKey)),
+            ValidateLifetime = true,
+            ClockSkew = TimeSpan.FromMinutes(1)
+        };
+    });
+builder.Services.AddAuthorization();
 
 // Add services to the container
 builder.Services.AddEndpointsApiExplorer();
@@ -57,6 +89,8 @@ if (app.Environment.IsDevelopment())
 
 // Security middleware
 app.UseHttpsRedirection();
+app.UseAuthentication();
+app.UseAuthorization();
 app.UseRateLimiter();
 
 // Automatically ensure PostgreSQL database and tables are created
@@ -76,7 +110,8 @@ using (var scope = app.Services.CreateScope())
 // Minimal API Endpoints
 var ordersGroup = app.MapGroup("/orders")
     .WithTags("Orders")
-    .RequireRateLimiting("fixed");
+    .RequireRateLimiting("fixed")
+    .RequireAuthorization();
 
 // POST /orders — Create a new order with input validation
 ordersGroup.MapPost("/", async (CreateOrderDto dto, OrderDbContext db, IPublishEndpoint publishEndpoint) =>
