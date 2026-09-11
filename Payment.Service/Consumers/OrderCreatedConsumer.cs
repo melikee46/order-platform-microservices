@@ -44,5 +44,19 @@ public class OrderCreatedConsumer : IConsumer<OrderCreated>
             payment.OrderId,
             payment.Amount
         );
+
+        // Bildirim servisini tetiklemek için PaymentProcessed event'ini RabbitMQ'ya yayınla
+        await context.Publish(new PaymentProcessed(
+            payment.Id,
+            payment.OrderId,
+            payment.Amount,
+            payment.Status,
+            payment.ProcessedAt
+        ));
+
+        _logger.LogInformation(
+            "📢 [RabbitMQ] PaymentProcessed Event Yayınlandı! PaymentId: {PaymentId}",
+            payment.Id
+        );
     }
 }
