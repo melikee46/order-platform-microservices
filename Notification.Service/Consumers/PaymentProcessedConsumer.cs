@@ -1,5 +1,6 @@
 using MassTransit;
 using Shared.Contracts.Events;
+using SerilogLogContext = Serilog.Context.LogContext;
 
 namespace Notification.Service.Consumers;
 
@@ -14,6 +15,9 @@ public class PaymentProcessedConsumer : IConsumer<PaymentProcessed>
 
     public Task Consume(ConsumeContext<PaymentProcessed> context)
     {
+        using var correlationScope = SerilogLogContext.PushProperty(
+            "CorrelationId",
+            context.CorrelationId ?? context.ConversationId);
         var message = context.Message;
 
         _logger.LogInformation(

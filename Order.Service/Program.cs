@@ -9,8 +9,20 @@ using Order.Service.Data;
 using Order.Service.DTOs;
 using Order.Service.Models;
 using Shared.Contracts.Events;
+using Serilog;
+using SerilogLogContext = Serilog.Context.LogContext;
 
 var builder = WebApplication.CreateBuilder(args);
+
+builder.Host.UseSerilog((context, _, configuration) =>
+{
+    configuration
+        .ReadFrom.Configuration(context.Configuration)
+        .Enrich.FromLogContext()
+        .Enrich.WithProperty("ServiceName", "Order.Service")
+        .WriteTo.Console()
+        .WriteTo.Seq(context.Configuration["Seq:ServerUrl"] ?? "http://localhost:5341");
+});
 
 var authenticationConfig = builder.Configuration.GetSection("Authentication");
 var signingKey = authenticationConfig["SigningKey"]
@@ -54,6 +66,8 @@ builder.Services.AddDbContext<OrderDbContext>(options =>
 
 // Configure MassTransit with RabbitMQ (credentials from appsettings, NOT hardcoded)
 var rabbitMqConfig = builder.Configuration.GetSection("RabbitMQ");
+var rabbitMqConnectionString =
+    $"amqp://{rabbitMqConfig["Username"]}:{rabbitMqConfig["Password"]}@{rabbitMqConfig["Host"]}:5672";
 builder.Services.AddMassTransit(x =>
 {
     x.UsingRabbitMq((context, cfg) =>
@@ -63,8 +77,13 @@ builder.Services.AddMassTransit(x =>
             h.Username(rabbitMqConfig["Username"] ?? throw new InvalidOperationException("RabbitMQ Username not configured."));
             h.Password(rabbitMqConfig["Password"] ?? throw new InvalidOperationException("RabbitMQ Password not configured."));
         });
+        cfg.UseMessageRetry(r => r.Exponential(3, TimeSpan.FromSeconds(1), TimeSpan.FromSeconds(10), TimeSpan.FromSeconds(2)));
     });
 });
+
+builder.Services.AddHealthChecks()
+    .AddNpgSql(connectionString, name: "postgresql")
+    .AddRabbitMQ(rabbitMqConnectionString, name: "rabbitmq");
 
 // Rate Limiting — prevent endpoint spam / DoS
 builder.Services.AddRateLimiter(options =>
@@ -80,6 +99,8 @@ builder.Services.AddRateLimiter(options =>
 
 var app = builder.Build();
 
+app.UseSerilogRequestLogging();
+
 // Configure the HTTP request pipeline
 if (app.Environment.IsDevelopment())
 {
@@ -88,7 +109,19 @@ if (app.Environment.IsDevelopment())
 }
 
 // Security middleware
-app.UseHttpsRedirection();
+if (!app.Environment.IsProduction())
+    app.UseHttpsRedirection();
+
+app.Use(async (context, next) =>
+{
+    var correlationId = context.Request.Headers["X-Correlation-ID"].FirstOrDefault()
+        ?? Guid.NewGuid().ToString("N");
+    context.Response.Headers["X-Correlation-ID"] = correlationId;
+
+    using (SerilogLogContext.PushProperty("CorrelationId", correlationId))
+        await next();
+});
+
 app.UseAuthentication();
 app.UseAuthorization();
 app.UseRateLimiter();
@@ -107,6 +140,8 @@ using (var scope = app.Services.CreateScope())
     }
 }
 
+app.MapHealthChecks("/health").AllowAnonymous();
+
 // Minimal API Endpoints
 var ordersGroup = app.MapGroup("/orders")
     .WithTags("Orders")
@@ -114,7 +149,11 @@ var ordersGroup = app.MapGroup("/orders")
     .RequireAuthorization();
 
 // POST /orders — Create a new order with input validation
-ordersGroup.MapPost("/", async (CreateOrderDto dto, OrderDbContext db, IPublishEndpoint publishEndpoint) =>
+ordersGroup.MapPost("/", async (
+    CreateOrderDto dto,
+    OrderDbContext db,
+    IPublishEndpoint publishEndpoint,
+    HttpContext httpContext) =>
 {
     // Input Validation
     var errors = new List<string>();
@@ -152,7 +191,11 @@ ordersGroup.MapPost("/", async (CreateOrderDto dto, OrderDbContext db, IPublishE
         order.Quantity,
         order.TotalPrice,
         order.CreatedAt
-    ));
+    ), publishContext =>
+    {
+        if (Guid.TryParse(httpContext.Request.Headers["X-Correlation-ID"], out var correlationId))
+            publishContext.CorrelationId = correlationId;
+    });
 
     var response = new OrderResponseDto(
         order.Id,

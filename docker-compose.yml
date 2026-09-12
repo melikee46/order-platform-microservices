@@ -6,8 +6,15 @@ services:
       - "127.0.0.1:5672:5672"
       - "127.0.0.1:15672:15672"
     environment:
-      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER}
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS}
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:?RABBITMQ_USER is required}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASS:?RABBITMQ_PASS is required}
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - platform
     restart: unless-stopped
 
   order-db:
@@ -17,8 +24,15 @@ services:
       - "127.0.0.1:5433:5432"
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: ${ORDER_DB_PASSWORD}
+      POSTGRES_PASSWORD: ${ORDER_DB_PASSWORD:?ORDER_DB_PASSWORD is required}
       POSTGRES_DB: orderdb
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d orderdb"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - platform
     restart: unless-stopped
 
   payment-db:
@@ -28,6 +42,141 @@ services:
       - "127.0.0.1:5434:5432"
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: ${PAYMENT_DB_PASSWORD}
+      POSTGRES_PASSWORD: ${PAYMENT_DB_PASSWORD:?PAYMENT_DB_PASSWORD is required}
       POSTGRES_DB: paymentdb
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d paymentdb"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    networks:
+      - platform
     restart: unless-stopped
+
+  seq:
+    image: datalust/seq:latest
+    container_name: seq
+    ports:
+      - "127.0.0.1:5341:80"
+    environment:
+      ACCEPT_EULA: "Y"
+    volumes:
+      - seq-data:/data
+    networks:
+      - platform
+    restart: unless-stopped
+
+  order-service:
+    build:
+      context: .
+      dockerfile: Order.Service/Dockerfile
+    container_name: order-service
+    ports:
+      - "127.0.0.1:5001:5001"
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_URLS: http://+:5001
+      ConnectionStrings__OrderDb: Host=order-db;Port=5432;Database=orderdb;Username=postgres;Password=${ORDER_DB_PASSWORD}
+      RabbitMQ__Host: rabbitmq
+      RabbitMQ__Username: ${RABBITMQ_USER}
+      RabbitMQ__Password: ${RABBITMQ_PASS}
+      Authentication__Issuer: ${AUTH_ISSUER:?AUTH_ISSUER is required}
+      Authentication__Audience: ${AUTH_AUDIENCE:?AUTH_AUDIENCE is required}
+      Authentication__SigningKey: ${AUTH_SIGNING_KEY:?AUTH_SIGNING_KEY is required}
+      Seq__ServerUrl: http://seq
+    depends_on:
+      order-db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      seq:
+        condition: service_started
+    networks:
+      - platform
+    restart: unless-stopped
+
+  payment-service:
+    build:
+      context: .
+      dockerfile: Payment.Service/Dockerfile
+    container_name: payment-service
+    ports:
+      - "127.0.0.1:5002:5002"
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_URLS: http://+:5002
+      ConnectionStrings__PaymentDb: Host=payment-db;Port=5432;Database=paymentdb;Username=postgres;Password=${PAYMENT_DB_PASSWORD}
+      RabbitMQ__Host: rabbitmq
+      RabbitMQ__Username: ${RABBITMQ_USER}
+      RabbitMQ__Password: ${RABBITMQ_PASS}
+      Authentication__Issuer: ${AUTH_ISSUER:?AUTH_ISSUER is required}
+      Authentication__Audience: ${AUTH_AUDIENCE:?AUTH_AUDIENCE is required}
+      Authentication__SigningKey: ${AUTH_SIGNING_KEY:?AUTH_SIGNING_KEY is required}
+      Seq__ServerUrl: http://seq
+    depends_on:
+      payment-db:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      seq:
+        condition: service_started
+    networks:
+      - platform
+    restart: unless-stopped
+
+  notification-service:
+    build:
+      context: .
+      dockerfile: Notification.Service/Dockerfile
+    container_name: notification-service
+    ports:
+      - "127.0.0.1:5003:5003"
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_URLS: http://+:5003
+      RabbitMQ__Host: rabbitmq
+      RabbitMQ__Username: ${RABBITMQ_USER}
+      RabbitMQ__Password: ${RABBITMQ_PASS}
+      Seq__ServerUrl: http://seq
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+      seq:
+        condition: service_started
+    networks:
+      - platform
+    restart: unless-stopped
+
+  gateway:
+    build:
+      context: .
+      dockerfile: Gateway/Dockerfile
+    container_name: gateway
+    ports:
+      - "127.0.0.1:5000:5000"
+    environment:
+      ASPNETCORE_ENVIRONMENT: Production
+      ASPNETCORE_URLS: http://+:5000
+      Authentication__Issuer: ${AUTH_ISSUER:?AUTH_ISSUER is required}
+      Authentication__Audience: ${AUTH_AUDIENCE:?AUTH_AUDIENCE is required}
+      Authentication__SigningKey: ${AUTH_SIGNING_KEY:?AUTH_SIGNING_KEY is required}
+      Seq__ServerUrl: http://seq
+      ReverseProxy__Clusters__orders-cluster__Destinations__order-service__Address: http://order-service:5001
+      ReverseProxy__Clusters__payments-cluster__Destinations__payment-service__Address: http://payment-service:5002
+    depends_on:
+      order-service:
+        condition: service_started
+      payment-service:
+        condition: service_started
+      seq:
+        condition: service_started
+    networks:
+      - platform
+    restart: unless-stopped
+
+networks:
+  platform:
+    driver: bridge
+
+volumes:
+  seq-data:
