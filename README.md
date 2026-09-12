@@ -73,6 +73,8 @@ flowchart LR
 | **Data Access / ORM** | Entity Framework Core & Npgsql | PostgreSQL provider and schema auto-creation |
 | **Databases** | PostgreSQL 16 (Alpine) | Isolated database per microservice |
 | **Orchestration** | Docker & Docker Compose | Containerized local infrastructure |
+| **Observability** | Seq + Serilog | Centralized structured logs and correlation IDs |
+| **Resilience** | MassTransit retry | Exponential retry for transient consumer failures |
 | **API Documentation** | Swagger / OpenAPI | Interactive endpoint explorer |
 
 ---
@@ -81,7 +83,7 @@ flowchart LR
 
 ```
 order-platform-learning/
-├── docker-compose.yml              # RabbitMQ (5672/15672), order-db (5433), payment-db (5434)
+├── docker-compose.yml              # Full platform: 4 apps, 2 DBs, RabbitMQ and Seq
 ├── OrderPlatform.sln               # Central solution linking all 5 projects
 ├── .env.example                    # Environment variable template
 ├── .gitignore                      # Standard .NET / Docker ignore rules
@@ -133,14 +135,25 @@ set -a && . ./.env && set +a
 ```
 The application configuration uses `RabbitMQ__Username` and `RabbitMQ__Password`; never commit the `.env` file.
 
-### 3. Start Infrastructure (Docker)
-Spin up RabbitMQ and the two PostgreSQL instances with a single command:
+### 3. Start the Full Platform (Docker)
+Build and start all eight containers (Gateway, three services, two databases, RabbitMQ and Seq):
 ```bash
-docker compose up -d
+docker compose up --build -d
 ```
 * **RabbitMQ Dashboard:** [http://localhost:15672](http://localhost:15672) *(credentials come from `RABBITMQ_USER` and `RABBITMQ_PASS` in your untracked `.env` file)*
+* **Seq Dashboard:** [http://localhost:5341](http://localhost:5341)
 
-### 4. Run the Platform
+### 4. Verify Health
+Each application exposes a health endpoint. Service health checks include PostgreSQL and/or RabbitMQ connectivity:
+```bash
+curl http://localhost:5000/health
+curl http://localhost:5001/health
+curl http://localhost:5002/health
+curl http://localhost:5003/health
+docker compose ps
+```
+
+### 5. Run the Platform Without Docker
 
 Open separate terminal tabs for each service (or launch via your IDE):
 
@@ -240,8 +253,8 @@ This project implements the following security measures to demonstrate productio
 - [x] **Phase 4:** `Payment.Service` implementation with MassTransit consumer and isolated database.
 - [x] **Phase 5:** `Notification.Service` (Consumer for `PaymentProcessed` lifecycle alerts).
 - [x] **Phase 6:** API Gateway integration via Microsoft YARP (Single entry point & routing).
-- [ ] **Phase 7:** End-to-end containerization with root Docker Compose orchestration.
-- [ ] **Phase 8:** Distributed Observability (Health Checks, OpenTelemetry / Serilog + Seq).
+- [x] **Phase 7:** End-to-end containerization with root Docker Compose orchestration.
+- [x] **Phase 8:** Distributed Observability (Health Checks, Serilog + Seq, correlation IDs and retry policies).
 
 ---
 

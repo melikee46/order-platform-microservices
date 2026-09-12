@@ -1,5 +1,6 @@
 using MassTransit;
 using Payment.Service.Data;
+using SerilogLogContext = Serilog.Context.LogContext;
 using Shared.Contracts.Events;
 
 namespace Payment.Service.Consumers;
@@ -17,6 +18,9 @@ public class OrderCreatedConsumer : IConsumer<OrderCreated>
 
     public async Task Consume(ConsumeContext<OrderCreated> context)
     {
+        using var correlationScope = SerilogLogContext.PushProperty(
+            "CorrelationId",
+            context.CorrelationId ?? context.ConversationId);
         var message = context.Message;
         _logger.LogInformation(
             "📬 [RabbitMQ] OrderCreated Event Alındı! OrderId: {OrderId}, Ürün: {ProductName}, Tutar: {TotalPrice:C}",
